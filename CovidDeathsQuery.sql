@@ -1,3 +1,5 @@
+--The purpose of these queries is to analyze COVID-19 data from the Covid 19 database.
+
 Select *
 From ProjectPortfolio..CovidDeaths
 Order by 3,4
