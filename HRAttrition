@@ -1,0 +1,176 @@
+--This data contains certain fields from an HR database as of September 30th 2021 that we will use to calculate attrition figures as well possible trends.
+--There are 4 tables including the job, compensation, evaluations, and manager tables.
+SELECT TOP 5 *
+FROM projectportfolio.dbo.job
+
+--Now we will run some queries to find out more information for our visualizations
+SELECT empl_status, Count(empl_id) as num_ee
+FROM projectportfolio.dbo.job
+GROUP BY empl_status
+ORDER BY empl_status
+
+--The CTE YearMonthCombinations generates a list of all unique year and month combinations from the dbo.job table where termination_date is not NULL.
+--The main query performs a LEFT JOIN between the CTE and the dbo.job table based on the year and month. 
+--This ensures that all possible combinations are included in the result, even if there are no corresponding records in the dbo.job table for a particular combination.
+--The COUNT function is used to count the employees for each combination of year and month.
+--The result is grouped by terminated_year and terminated_month, and ordered accordingly.
+WITH YearMonthCombinations AS (
+    SELECT
+        YEAR(termination_date) AS terminated_year,
+        MONTH(termination_date) AS terminated_month
+    FROM
+        projectportfolio.dbo.job
+    WHERE
+        termination_date IS NOT NULL
+    GROUP BY
+        YEAR(termination_date), MONTH(termination_date)
+)
+
+SELECT
+    YMC.terminated_year,
+    YMC.terminated_month,
+	J.dept,
+    COUNT(J.empl_ID) AS employee_count
+FROM
+    YearMonthCombinations YMC
+LEFT JOIN
+    projectportfolio.dbo.job J
+ON
+    YMC.terminated_year = YEAR(J.termination_date)
+    AND YMC.terminated_month = MONTH(J.termination_date)
+GROUP BY
+    YMC.terminated_year, YMC.terminated_month, J.dept
+ORDER BY
+    YMC.terminated_year, YMC.terminated_month, J.dept;
+
+--I will do the same for hires for a comparison
+WITH YearMonthCombinations AS (
+    SELECT
+        YEAR(hire_date) AS hired_year,
+        MONTH(hire_date) AS hired_month
+    FROM
+        projectportfolio.dbo.job
+    WHERE
+        hire_date IS NOT NULL
+    GROUP BY
+        YEAR(hire_date), MONTH(hire_date)
+)
+
+SELECT
+    YMC.hired_year,
+    YMC.hired_month,
+	J.dept,
+    COUNT(J.empl_ID) AS employee_count
+FROM
+    YearMonthCombinations YMC
+LEFT JOIN
+    projectportfolio.dbo.job J
+ON
+    YMC.hired_year = YEAR(J.hire_date)
+    AND YMC.hired_month = MONTH(J.hire_date)
+GROUP BY
+    YMC.hired_year, YMC.hired_month, J.dept
+ORDER BY
+    YMC.hired_year, YMC.hired_month, J.dept;
+
+--I would also like to see the headcount as of October 31, 2017
+WITH DepartmentHeadcount AS (
+    SELECT dept, COUNT(empl_id) as headcount
+    FROM projectportfolio.dbo.job
+    WHERE hire_date <= '2017-10-31' AND (termination_date IS NULL OR termination_date > '2017-10-31')
+    GROUP BY dept
+)
+SELECT dept, headcount
+FROM DepartmentHeadcount
+
+UNION ALL
+
+SELECT 'Total' AS dept, SUM(headcount) AS headcount
+FROM DepartmentHeadcount
+ORDER BY dept 
+
+-- Create a recursive CTE to generate a list of months
+WITH Months AS (
+    SELECT CAST('2017-09-01' AS DATE) AS Month
+    UNION ALL
+    SELECT DATEADD(MONTH, 1, Month)
+    FROM Months
+    WHERE Month <= '2021-09-01'
+)
+
+-- We will also need columns to calculate headcount for each month by department
+SELECT
+    M.Month,
+    J.dept,
+    COUNT(J.empl_id) AS headcount
+FROM
+    Months M
+CROSS JOIN
+    (SELECT DISTINCT dept FROM dbo.job) Departments
+LEFT JOIN
+    dbo.job J
+ON
+    J.dept = Departments.dept
+    AND J.hire_date <= M.Month
+    AND (J.termination_date IS NULL OR J.termination_date > M.Month)
+GROUP BY
+    M.Month, J.dept
+ORDER BY
+    M.Month, J.dept;
+	
+--This data would also be helpful with a column for prev_headcount to compare the previous month.
+	WITH Months AS (
+    SELECT CAST('2017-09-01' AS DATE) AS Month
+    UNION ALL
+    SELECT DATEADD(MONTH, 1, Month)
+    FROM Months
+    WHERE Month <= '2021-09-01'
+)
+SELECT
+    M.Month,
+    J.dept,
+    COUNT(J.empl_id) AS headcount,
+    LAG(COUNT(J.empl_id)) OVER (PARTITION BY J.dept ORDER BY M.Month) AS prev_headcount 
+FROM
+    Months M
+CROSS JOIN
+    (SELECT DISTINCT dept FROM projectportfolio.dbo.job) Departments
+LEFT JOIN
+    projectportfolio.dbo.job J
+ON
+    J.dept = Departments.dept
+    AND J.hire_date <= M.Month
+    AND (J.termination_date IS NULL OR J.termination_date > M.Month)
+GROUP BY
+    M.Month, J.dept
+ORDER BY
+    M.Month, J.dept;
+
+
+--I will also run some information to see any trends on terminated employees
+--First I will do a join on terminated employees by manager
+SELECT M.mgr_name, J.reports_to_id, J.dept, COUNT(J.empl_ID) AS term_employee_count
+FROM projectportfolio.dbo.manager AS M
+LEFT JOIN projectportfolio.dbo.job AS J
+ON M.mgr_empl_ID = J.reports_to_id
+WHERE j.empl_status = 'Terminated'
+GROUP BY M.mgr_name, J.reports_to_id, J.dept
+ORDER BY term_employee_count DESC;
+
+--This query will find the count of terminated employees eligible for a pay raise (at least 1 year of seniority) last raise
+SELECT J.dept, DATEDIFF(YEAR, C.last_raise_date, '2021-09-30') AS YearsSinceLastRaise, C.salary, COUNT(J.empl_ID) AS term_employee_count
+FROM projectportfolio.dbo.compensation AS C
+LEFT JOIN projectportfolio.dbo.job AS J
+ON c.empl_ID = J.empl_id
+WHERE j.empl_status = 'Terminated' AND c.seniority_years >= 1
+GROUP BY j.dept,C.Salary, C.last_raise_date
+ORDER BY term_employee_count DESC;
+
+--This query will find the count of terminated employees with average monthly hours worked, average number of projects, and average evaluation score.
+SELECT J.dept, AVG(E.average_monthly_hours) as dept_avg_mnthly_hrs, AVG(E.number_project) AS avg_num_prjct, AVG(E.eval_score) AS avg_eval_scr, COUNT(J.empl_ID) AS term_employee_count
+FROM projectportfolio.dbo.evaluations AS E
+LEFT JOIN projectportfolio.dbo.job AS J
+ON E.empl_ID = J.empl_id
+WHERE j.empl_status = 'Terminated' 
+GROUP BY j.dept
+ORDER BY term_employee_count DESC;
